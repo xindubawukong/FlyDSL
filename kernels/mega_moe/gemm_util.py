@@ -520,7 +520,7 @@ class SiluQuantEpilogue:
     # fmt: off
     def __init__(self, *, out_rsrc, out_scale_rsrc, sorted_rsrc, tokens, inter_dim, m_repeat, num_acc_n,
         sort_block_m, tile_n, num_waves, lds_out, swiglu_limit=0.0, always_valid=False,
-        out_tensor=None, out_dtype="fp8"):
+        out_tensor=None, out_dtype="fp8", activation="silu"):
     # fmt: on
         self._out_rsrc = out_rsrc
         self._out_scale_rsrc = out_scale_rsrc
@@ -534,6 +534,9 @@ class SiluQuantEpilogue:
         self._num_waves = num_waves
         self._lds_out = lds_out
         self._swiglu_limit = float(swiglu_limit)
+        self._activation = activation
+        if activation not in ("silu", "openai_swiglu"):
+            raise ValueError(f"unsupported activation={activation!r}")
         self._always_valid = always_valid
         self._out_tensor = out_tensor
         self._is_fp4 = out_dtype == "fp4"
@@ -558,6 +561,17 @@ class SiluQuantEpilogue:
     def _silu_mul(self, gate_v4, up_v4):
         gv = Vec(gate_v4)
         uv = Vec(up_v4)
+        if self._activation == "openai_swiglu":
+            limit = fx.Float32(7.0)
+            alpha_log2e = fx.Float32(-2.455307455790015)
+            one = fx.Float32(1.0)
+            elems = []
+            for i in range_constexpr(4):
+                gate = -(-gv[i]).maximumf(-limit)
+                up = fx.clampf(uv[i], -limit, limit)
+                sigmoid = one / (one + (alpha_log2e * gate).exp2())
+                elems.append(gate * sigmoid * (up + one))
+            return Vec.from_elements(elems, fx.Float32)
         if self._swiglu_limit <= 0:
             elems = [self._silu(gv[i]) * uv[i] for i in range_constexpr(4)]
             return Vec.from_elements(elems, fx.Float32)

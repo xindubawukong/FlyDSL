@@ -33,7 +33,7 @@ class MegaMoE:
     def __init__(self, *, rank: int, world_size: int, model_dim: int, inter_dim: int, experts: int, topk: int,
         quant: str, w1: torch.Tensor, w1_scale: torch.Tensor, w2: torch.Tensor, w2_scale: torch.Tensor,
         max_tok_per_rank: int, mega_scheme: str = "fixedslot", stage2_p2p_quant: str = "auto",
-        swiglu_limit: float = 0.0):
+        swiglu_limit: float = 0.0, activation: str = "silu"):
     # fmt: on
         if quant not in ("a4w4", "a8w4"):
             raise ValueError("MegaMoE quant must be 'a4w4' or 'a8w4'")
@@ -43,6 +43,8 @@ class MegaMoE:
             raise ValueError(f"max_tok_per_rank={max_tok_per_rank} must be a power of two")
         if stage2_p2p_quant not in ("auto", "none", "fp8_blockwise_1x32"):
             raise ValueError(f"unsupported stage2_p2p_quant={stage2_p2p_quant!r}")
+        if activation not in ("silu", "openai_swiglu"):
+            raise ValueError(f"unsupported activation={activation!r}")
         self.rank = int(rank)
         self.world_size = int(world_size)
         self.model_dim = int(model_dim)
@@ -56,6 +58,7 @@ class MegaMoE:
         self._a_view_dim = self.model_dim // 2 if self._a_dtype == "fp4" else self.model_dim
         self._stage2_p2p_quant = stage2_p2p_quant
         self.swiglu_limit = float(swiglu_limit)
+        self.activation = activation
         if self.swiglu_limit < 0:
             raise ValueError("swiglu_limit must be non-negative")
         self.dev = torch.device("cuda", rank)
@@ -273,7 +276,8 @@ class MegaMoE:
             external_counting=config.external_counting,
             payload_chunk_rows=config.payload_chunk_rows,
             payload_tile_ready=config.payload_tile_ready,
-            a_dtype=self._a_dtype, out_dtype=self._a_dtype, swiglu_limit=self.swiglu_limit)
+            a_dtype=self._a_dtype, out_dtype=self._a_dtype, swiglu_limit=self.swiglu_limit,
+            activation=self.activation)
         # fmt: on
         self._s1_active_tile_m = config.sort_block_m
         return self._s1_active_tile_m

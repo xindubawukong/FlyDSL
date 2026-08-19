@@ -67,11 +67,13 @@ def compile_mega_moe_stage1(
     work_shards: int | None = None, external_grouping: bool | None = None,
     external_counting: bool | None = None, a_dtype: str = "fp8", out_dtype: str = "fp8",
     payload_chunk_rows: int = 0, payload_tile_ready: bool = False,
-    swiglu_limit: float = 0.0,
+    swiglu_limit: float = 0.0, activation: str = "silu",
 ):
     arch = str(get_rocm_arch() or "")
     if not arch.startswith("gfx95"):
         raise RuntimeError(f"MegaMoE stage1 requires CDNA4 (gfx95x), got {arch or 'unknown'}")
+    if activation not in ("silu", "openai_swiglu"):
+        raise ValueError(f"unsupported activation={activation!r}")
     NUM_WAVES = int(num_waves)
     assert NUM_WAVES > 1, "planner needs one communication wave and at least one grouping wave"
     assert 1 <= waves_per_eu_hint <= 4
@@ -156,7 +158,9 @@ def compile_mega_moe_stage1(
         A_scale: fx.Array[fx.Int8, n_scale_bytes, 16]
 
     dispatch_path = "fixedslot" if fixed_slot_dispatch else "compact"
-    swiglu_suffix = "" if swiglu_limit <= 0 else f"_sl{str(float(swiglu_limit)).replace('.', 'p')}"
+    swiglu_suffix = "_openai" if activation == "openai_swiglu" else (
+        "" if swiglu_limit <= 0 else f"_sl{str(float(swiglu_limit)).replace('.', 'p')}"
+    )
     kernel_name = (
         f"megamoe_stage1_{dispatch_path}_t{sort_block_m}x{tile_n}x{tile_k}"
         f"_a{a_dtype}o{out_dtype}"
@@ -391,7 +395,7 @@ def compile_mega_moe_stage1(
             swizzle_a=swizzle_a, pipe_weights=pipe_weights, mfma_amajor=mfma_amajor,
             async_a_copy=async_a_copy, use_tile_resource=use_tile_resource,
             a_dtype=a_dtype, out_dtype=out_dtype,
-            swiglu_limit=swiglu_limit,
+            swiglu_limit=swiglu_limit, activation=activation,
         )
 
         if tid == fx.Int32(0):
@@ -481,7 +485,7 @@ def run_mega_moe_stage1(out, x, w, scale_x, scale_w, sorted_token_ids, expert_id
     use_tile_resource=True, waves_per_eu_hint=2,
     b_nt=-1, work_shards=None, external_grouping=None, external_counting=None,
     a_dtype="fp8", out_dtype="fp8", payload_chunk_rows=0, payload_tile_ready=False,
-    swiglu_limit=0.0):
+    swiglu_limit=0.0, activation="silu"):
     launch = compile_mega_moe_stage1(
         model_dim=model_dim, inter_dim=inter_dim, rank=rank, experts_per_rank=experts_per_rank,
         fuse_npes=fuse_npes, fuse_topk=fuse_topk, fuse_cap=fuse_cap, fuse_mtpr=fuse_mtpr,
@@ -495,6 +499,7 @@ def run_mega_moe_stage1(out, x, w, scale_x, scale_w, sorted_token_ids, expert_id
         payload_chunk_rows=payload_chunk_rows,
         payload_tile_ready=payload_tile_ready,
         swiglu_limit=swiglu_limit,
+        activation=activation,
     )
     _run_compiled(
         launch, out, x, w, scale_x, scale_w, sorted_token_ids, expert_ids, num_valid_ids, out_scale,
